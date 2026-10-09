@@ -5,7 +5,6 @@ import type { CartLine, Customer, OrderAccess, Product, Receipt } from './src/ty
 import { addCartLine, errorMessage, money, parseCart, setCartQuantity, whatsappUrl } from './src/lib/domain';
 import { getMethods, getProduct, getProducts, getSettings, loadReceipt, readOrderAccess } from './src/lib/api';
 import { useResource } from './src/lib/useResource';
-import { Field, Message, Pagination, Photo } from './src/components/UI';
 import { CartPanel } from './src/shop/CartPanel';
 import { Checkout } from './src/shop/Checkout';
 import { OrderReceipt } from './src/shop/OrderReceipt';
@@ -103,7 +102,15 @@ export default function App() {
       wa = whatsappUrl(store.admin_phone, 'Halo, saya ingin bertanya tentang produk ZYHA ID.');
   }
   catch { }
-  return <div className="storefront">
+  return (
+  <StorefrontProvider
+    store={store}
+    methods={methods.data || []}
+    revision={revision}
+    onOpenProduct={id => navigate('shop', id)}
+  >
+    <div className="storefront">
+      <PromotionStrip />
     <header className="store-header">
       <div className="container header-inner">
         <button className="brand" onClick={() => navigate()}>
@@ -135,7 +142,7 @@ export default function App() {
         <button className="text-button back-link" onClick={() => navigate()}><StoreIcon name="arrow-left" />Kembali ke katalog</button>
         <Message error={detail.error} loading={detail.loading} />
         {detail.data ? <ProductDetail key={detail.data.id} product={detail.data} onAdd={add} /> : !detail.loading && <p className="empty">Produk tidak ditemukan atau sudah tidak aktif.</p>}
-      </section> : <>
+      <BannerCarousel> : <>
         <section className="container hero-section" aria-label="Koleksi pilihan">
           <div className={'hero ' + (store?.banner_url ? 'with-image' : '')}>
             {store?.banner_url && <div className="hero-media" key={store?.banner_url || 'no-banner'}>
@@ -157,13 +164,15 @@ export default function App() {
             </div>
             <span className="catalog-count muted">{catalog.loading ? 'Memuat koleksi…' : (catalog.data?.count ?? 0) + ' produk'}</span>
           </div>
-          <div className="catalog-filters">
-            <div className="search-field">
-              <Field label="Cari produk">
-                <input type="search" placeholder="Nama produk…" value={search} onChange={e => filter('q', e.target.value)} maxLength={100} />
-              </Field>
-              <StoreIcon name="search" />
-            </div>
+<CatalogControls
+  search={search}
+  category={category}
+  sort={sort}
+  categories={store?.categories || []}
+  suggestions={catalog.data?.rows || []}
+  loading={catalog.loading}
+  onFilter={filter}
+/>
             <Field label="Kategori">
               <select value={category} onChange={e => filter('category', e.target.value)}>
                 <option value="">Semua kategori</option>
