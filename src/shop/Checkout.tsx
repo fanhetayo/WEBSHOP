@@ -4,11 +4,12 @@ import type { CartLine, Customer, OrderAccess, PaymentMethod, Receipt, Settings 
 import { cartTotals, money, validateCustomer, errorMessage } from '../lib/domain';
 import { submitOrder, readOrderAccess } from '../lib/api';
 import { Field, Message, Photo } from '../components/UI';
-export function Checkout({ cart, settings, methods, onDone, onBack }: {
+export function Checkout({ cart, settings, methods, onDone, onBack, onBusy }: {
   cart: CartLine[];
   settings: Settings;
   methods: PaymentMethod[];
-  onDone: (receipt: Receipt, access: OrderAccess, customer: Customer) => void;
+  onDone: (receipt: Receipt, access: OrderAccess, customer: Customer, submitted: CartLine[]) => void;
+  onBusy: (busy: boolean) => void;
   onBack: () => void;
 }) {
   const [customer, setCustomer] = useState<Customer>({ name: '', phone: '', address: '', note: '' });
@@ -21,6 +22,7 @@ export function Checkout({ cart, settings, methods, onDone, onBack }: {
     if (flight.current)
       return;
     flight.current = true;
+    onBusy(true);
     setBusy(true);
     setError('');
     try {
@@ -28,13 +30,15 @@ export function Checkout({ cart, settings, methods, onDone, onBack }: {
       if (!payment)
         throw new Error('Pilih metode pembayaran.');
       const result = await submitOrder(cart, valid, payment, readOrderAccess());
-      onDone(result.receipt, result.access, valid);
+      onBusy(false);
+      onDone(result.receipt, result.access, valid, cart);
     }
     catch (e) {
       setError(errorMessage(e));
     }
     finally {
       flight.current = false;
+      onBusy(false);
       setBusy(false);
     }
   }
@@ -47,7 +51,7 @@ export function Checkout({ cart, settings, methods, onDone, onBack }: {
     <button className="text-button" type="button" disabled={busy} onClick={onBack}>Kembali ke katalog</button>
     <h1>Checkout</h1>
     <form className="checkout-grid" onSubmit={submit}>
-      <div className="stack">
+      <fieldset className="stack" disabled={busy} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         <section className="panel stack">
           <h2>Detail pengiriman</h2>
           <Field label="Nama lengkap">
@@ -78,7 +82,7 @@ export function Checkout({ cart, settings, methods, onDone, onBack }: {
             </span>
           </label>)}
         </fieldset>
-      </div>
+      </fieldset>
       <aside className="panel checkout-summary stack">
         <h2>Ringkasan pesanan</h2>
         {cart.map(x => <div className="split" key={x.product_id + '|' + x.variant}>

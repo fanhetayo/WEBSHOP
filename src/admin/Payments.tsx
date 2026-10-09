@@ -15,7 +15,7 @@ export default function Payments() {
   async function save(event: FormEvent) {
     event.preventDefault(); if (busy)
       return; setBusy(true); setError(''); try {
-        await saveMethod(draft, id);
+        await saveMethod({ ...draft, qris_url: draft.type === 'QRIS' ? draft.qris_url : '', account_number: ['Bank', 'E-Wallet'].includes(draft.type) ? draft.account_number : '', account_holder: ['Bank', 'E-Wallet'].includes(draft.type) ? draft.account_holder : '' }, id);
         setOpen(false);
         setRev(n => n + 1);
         setMessage('Metode pembayaran disimpan.');
@@ -77,7 +77,7 @@ export default function Payments() {
           <input required maxLength={100} value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} />
         </Field>
         <Field label="Jenis">
-          <select value={draft.type} onChange={e => setDraft({ ...draft, type: e.target.value as PaymentType })}>
+          <select disabled={busy} value={draft.type} onChange={e => setDraft({ ...draft, type: e.target.value as PaymentType, qris_url: e.target.value === 'QRIS' ? draft.qris_url : '' })}>
             {['Bank', 'E-Wallet', 'QRIS', 'Midtrans'].map(t => <option key={t}>
               {t}
             </option>)}

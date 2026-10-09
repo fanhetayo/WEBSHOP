@@ -51,24 +51,39 @@ export async function shopAction<T>(body: Record<string, unknown>): Promise<T> {
         throw new Error(data?.error || 'Respons server tidak lengkap.');
     return data as T;
 }
+let memoryAccess: OrderAccess | null = null;
 export function readOrderAccess(): OrderAccess | null {
+    if (memoryAccess) return memoryAccess;
     try {
         const x = JSON.parse(sessionStorage.getItem(projectStorageKey + 'order-access') || 'null');
-        return x && typeof x.signature === 'string' && /^[0-9a-f]{64}$/.test(x.receiptToken) && /^[0-9a-f-]{36}$/.test(x.requestId) ? x : null;
+        memoryAccess = x && typeof x.signature === 'string' && /^[0-9a-f]{64}$/.test(x.receiptToken) && /^[0-9a-f-]{36}$/.test(x.requestId) ? x : null;
+        return memoryAccess;
     }
     catch {
         return null;
     }
 }
-function saveAccess(value: OrderAccess) { try {
+function saveAccess(value: OrderAccess) {
+    memoryAccess = value;
+    try {
     sessionStorage.setItem(projectStorageKey + 'order-access', JSON.stringify(value));
 }
 catch { /* In-memory access still works; receipt page explains per-tab storage. */ } }
+let orderInFlight = false;
 export async function submitOrder(cart: CartLine[], customer: Customer, methodId: string, prior: OrderAccess | null) {
+    if (orderInFlight) throw new Error('Pesanan sedang diproses. Tunggu sebelum mencoba kembali.');
+    orderInFlight = true;
+    try { return await placeOrder(cart, customer, methodId, prior); }
+    finally { orderInFlight = false; }
+}
+async function placeOrder(cart: CartLine[], customer: Customer, methodId: string, prior: OrderAccess | null) {
     const body = { items: checkoutItems(cart), customer: validateCustomer(customer), methodId };
     const signature = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(body)))), n => n.toString(16).padStart(2, '0')).join('');
-    const existing = prior?.signature === signature ? prior : readOrderAccess();
-    const access: OrderAccess = existing?.signature === signature ? existing : { requestId: crypto.randomUUID(), receiptToken: Array.from(crypto.getRandomValues(new Uint8Array(32)), n => n.toString(16).padStart(2, '0')).join(''), signature };
+    const existing = readOrderAccess() || prior;
+    // An uncertain request must not be overwritten, even when the form changes.
+    if (existing && !existing.id && existing.signature !== signature)
+        throw new Error('Pesanan sebelumnya belum pasti. Periksa pesanan terakhir atau ulangi dengan data yang sama.');
+    const access: OrderAccess = existing && !existing.id && existing.signature === signature ? existing : { requestId: crypto.randomUUID(), receiptToken: Array.from(crypto.getRandomValues(new Uint8Array(32)), n => n.toString(16).padStart(2, '0')).join(''), signature };
     saveAccess(access); // Persist idempotency proof before sending; no address/phone is persisted here.
     const result = await shopAction<{
         receipt: Receipt;
@@ -81,7 +96,10 @@ export async function submitOrder(cart: CartLine[], customer: Customer, methodId
 }
 export async function loadReceipt(access: OrderAccess, refresh = false) { const x = await shopAction<{
     receipt: Receipt;
-}>({ ...access, action: 'receipt', refresh }); return x.receipt; }
+}>({ ...access, action: 'receipt', refresh });
+    if (!x.receipt?.id) throw new Error('Pesanan belum dikonfirmasi server.');
+    if (readOrderAccess()?.requestId === access.requestId) saveAccess({ ...access, id: x.receipt.id });
+    return x.receipt; }
 export async function saveProduct(value: Partial<Product>, original?: Product) {
     const payload = { title: value.title?.trim(), description: value.description?.trim() || '', category: value.category?.trim() || '', price: Number(value.price), stock: value.stock === null ? null : Number(value.stock), image_url: value.image_url || '', images: value.images || [], variants: (value.variants || []).map(v => ({ name: v.name.trim(), image: v.image.trim() })), is_active: value.is_active ?? true };
     if (!payload.title || !Number.isSafeInteger(payload.price) || payload.price < 1 || payload.price > 1e9)

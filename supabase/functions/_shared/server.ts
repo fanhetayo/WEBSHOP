@@ -127,5 +127,5 @@ export async function syncPayment(db: Database, order: GatewayOrder, lookupId?: 
     if (!data)
         return;
     const status = gatewayStatus(data);
-    await db.rpc('zyha_apply_gateway_status', { p_id: order.id, p_status: status, p_amount: integerMoney(data.gross_amount), p_transaction: data.transaction_id, p_gateway_state: String(data.transaction_status || ''), p_refund: status === 'refunded' ? Number(order.total_price) : integerMoney(data.refund_amount ?? (status === 'partial_refund' ? null : 0)) });
+    await db.rpc('zyha_apply_gateway_status', { p_id: order.id, p_status: status, p_amount: integerMoney(data.gross_amount), p_transaction: data.transaction_id, p_gateway_state: String(data.transaction_status || ''), p_refund: status === 'refunded' ? Number(order.total_price) : status === 'partial_refund' ? integerMoney(data.refund_amount) : 0 });
 }

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Customer, OrderAccess, Receipt, Settings } from '../types';
 import { dateTime, errorMessage, fulfillmentLabels, money, orderLabels, whatsappUrl } from '../lib/domain';
 import { loadReceipt, shopAction } from '../lib/api';
@@ -12,9 +12,21 @@ export function OrderReceipt({ initial, access, settings, customer, onBack }: {
   onBack: () => void;
 }) {
   const [receipt, setReceipt] = useState(initial), [busy, setBusy] = useState(false), [error, setError] = useState(''), [message, setMessage] = useState('');
+  const [fresh, setFresh] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setFresh(false);
+    setBusy(true);
+    void loadReceipt(access, true).then(value => {
+      if (active) { setReceipt(value); setFresh(true); }
+    }).catch(e => { if (active) setError(errorMessage(e)); })
+      .finally(() => { if (active) setBusy(false); });
+    return () => { active = false; };
+  }, [access.requestId, access.receiptToken]);
   async function refresh() {
     setBusy(true); setError(''); try {
       setReceipt(await loadReceipt(access, true));
+      setFresh(true);
       setMessage('Status pesanan diperbarui dari server.');
     }
       catch (e) {
@@ -72,7 +84,7 @@ export function OrderReceipt({ initial, access, settings, customer, onBack }: {
           {receipt.carrier} · {receipt.tracking_number}
         </strong>
         </p>}
-        {receipt.status === 'pending' && <>
+        {fresh && receipt.status === 'pending' && <>
           <h3>
             {method.name}
           </h3>
@@ -81,7 +93,7 @@ export function OrderReceipt({ initial, access, settings, customer, onBack }: {
             <button type="button" className="button" disabled={busy} onClick={pay}>Bayar melalui Midtrans</button>
           </> : <>
             <p>Transfer sesuai total pesanan, kemudian kirim konfirmasi ke Admin. Pesanan tidak otomatis dianggap lunas.</p>
-            {method.qris_url ? <Photo src={method.qris_url} alt={'QRIS ' + method.name} className="qris" /> : <>
+            {method.type === 'QRIS' ? <Photo src={method.qris_url} alt={'QRIS ' + method.name} className="qris" /> : <>
               <p className="account-number">
                 {method.account_number}
               </p>

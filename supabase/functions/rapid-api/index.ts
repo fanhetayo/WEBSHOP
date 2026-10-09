@@ -8,8 +8,8 @@ Deno.serve(async (request: Request) => {
             return new Response(null, { status: 204, headers });
         if (request.method !== 'POST')
             throw new HttpError(405, 'Gunakan POST.');
-        const body = await readJson(request);
         const db = new Database();
+        const body = await readJson(request);
         // Gateway-derived IP is best-effort; a global quota also bounds guest writes.
         const ip = request.headers.get('x-forwarded-for')?.split(',')[0].trim() || 'unknown';
         const actor = await hash(db.key + ':' + ip);
@@ -45,9 +45,8 @@ Deno.serve(async (request: Request) => {
         const requestId = uuid(body.requestId);
         const token = proof(body.receiptToken);
         if (action === 'checkout') {
-            await db.limit('checkout:global', 250);
-            await db.limit('checkout:' + actor, 8);
             const data = checkoutInput(body);
+            await db.limit('checkout:' + actor, 8);
             await db.limit('phone:' + await hash(db.key + data.customer.phone), 6, 600);
             const existing = await db.row<{
                 id: string;
@@ -66,6 +65,8 @@ Deno.serve(async (request: Request) => {
                     throw new HttpError(503, 'Midtrans belum diaktifkan.');
                 gateway(settings.midtrans_mode);
             }
+            // Invalid input and rejected actor/phone quotas must not consume shared capacity.
+            await db.limit('checkout:global', 250);
             await db.rpc('zyha_place_order', { p_request_id: requestId, p_receipt_token: token, p_request_hash: await hash(JSON.stringify(data)), p_items: data.items, p_customer: data.customer, p_method_id: data.methodId });
         }
         else if (action !== 'receipt' && action !== 'payment')

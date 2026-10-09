@@ -1,6 +1,32 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const v=require('../.test-build/supabase/functions/_shared/validation.js');
 const ID='00000000-0000-4000-8000-000000000001';
+test('provider reversal is failed',()=>assert.equal(v.gatewayStatus({transaction_status:'deny'}),'failed'));
+test('full chargeback uses fully reversed accounting status',()=>assert.equal(v.gatewayStatus({transaction_status:'chargeback'}),'refunded'));
+test('partial chargeback uses verified cumulative amount',()=>assert.equal(v.gatewayStatus({transaction_status:'partial_chargeback',gross_amount:'100.00',refund_amount:'30.00'}),'partial_refund'));
+for(const amount of [undefined,null,'bad','0','100','101','1.50'])test(`ambiguous partial chargeback stops payment eligibility: ${amount}`,()=>assert.equal(v.gatewayStatus({transaction_status:'partial_chargeback',gross_amount:'100.00',refund_amount:amount}),'failed'));
+const fs=require('node:fs');
+const setup=fs.readFileSync('supabase-setup.sql','utf8');
+const migration=fs.readFileSync('supabase/migrations/202610100002_payment_reconciliation.sql','utf8');
+test('SQL preserves cumulative refunds and gates disputed fulfillment',()=>{
+ assert.match(setup,/refund_amount=case when p_status='refunded' then total_price else greatest\(refund_amount,p_refund\) end/);
+ assert.match(setup,/r\.status=p_status and r\.refund_amount>=p_refund and r\.gateway_state=p_gateway_state/);
+ assert.match(setup,/r\.gateway_state in \('deny','failure','chargeback','partial_chargeback'\) and p_status='partial_refund' and p_gateway_state is distinct from 'partial_chargeback' then return false/);
+ assert.match(setup,/r\.status not in \('paid','partial_refund'\) or r\.gateway_state in \('chargeback','partial_chargeback','deny','failure'\)/);
+});
+for(const name of ['zyha_apply_gateway_status','zyha_cancel_unstarted','zyha_admin_order_action'])test(`migration matches setup: ${name}`,()=>{
+ const extract=s=>s.match(new RegExp(`create or replace function public\\.${name}\\([\\s\\S]*?end \\$\\$;`))[0];
+ assert.equal(extract(migration),extract(setup));
+});
+test('checkout global quota follows validation and narrower rejection checks only',()=>{
+ const source=fs.readFileSync('supabase/functions/rapid-api/index.ts','utf8');
+ assert.doesNotMatch(source,/request:global/);
+ const global=source.indexOf("await db.limit('checkout:global', 250)");
+ for(const check of ["if (action === 'checkout')",'const data = checkoutInput(body)',"await db.limit('request:' + actor", "await db.limit('checkout:' + actor", "await db.limit('phone:'",'if (!method && !existing)','gateway(settings.midtrans_mode)']) {
+  assert.ok(source.indexOf(check)>=0 && source.indexOf(check)<global,check);
+ }
+ assert.ok(global<source.indexOf("await db.rpc('zyha_place_order'"));
+});
 const input=()=>({customer:{name:'Uji',address:'Alamat lengkap pengujian',phone:'6281234567890',note:''},methodId:ID,items:[{product_id:ID,quantity:1,variant:''}]});
 test('checkout ignores tampered client price',()=>{const b=input();b.items[0].price=1;b.total=1;assert.equal('price' in v.checkoutInput(b).items[0],false)});
 for(const q of [0,-1,1.1,100,'2',null])test(`reject invalid quantity ${q}`,()=>{const b=input();b.items[0].quantity=q;assert.throws(()=>v.checkoutInput(b));});

@@ -301,7 +301,7 @@ begin
   next_status=p_action;
   if p_action='cancelled' then perform public.zyha_restore_stock(r.id); end if;
  elsif p_action in ('processing','shipped','completed') then
-  if r.status not in ('paid','partial_refund') then raise exception 'Pesanan harus lunas sebelum diproses'; end if;
+  if r.status not in ('paid','partial_refund') or r.gateway_state in ('chargeback','partial_chargeback','deny','failure') then raise exception 'Pesanan harus lunas dan bebas sengketa sebelum diproses'; end if;
   if not ((r.fulfillment_status='unfulfilled' and p_action='processing') or (r.fulfillment_status='processing' and p_action='shipped') or (r.fulfillment_status='shipped' and p_action='completed')) then raise exception 'Urutan status pengiriman tidak valid'; end if;
   if p_action='shipped' and (coalesce(length(btrim(p_tracking)),0)=0 or coalesce(length(btrim(p_carrier)),0)=0) then raise exception 'Isi kurir dan nomor resi'; end if;
   next_fulfillment=p_action;
@@ -341,9 +341,12 @@ begin
  if not found or r.payment_snapshot->>'type'<>'Midtrans' or r.total_price<>p_amount then raise exception 'Gateway order/amount mismatch'; end if;
  if p_status not in ('pending','paid','cancelled','expired','failed','refunded','partial_refund') or p_refund<0 or p_refund>r.total_price then raise exception 'Invalid gateway state'; end if;
  if r.gateway_transaction_id is not null and r.gateway_transaction_id<>p_transaction then raise exception 'Gateway transaction mismatch'; end if;
- if r.status='refunded' or (r.status='partial_refund' and p_status in ('pending','paid','cancelled','failed','expired')) or (r.status='paid' and p_status in ('pending','failed','expired')) or (r.status='paid' and p_status='cancelled' and coalesce(r.gateway_state,'')<>'capture') or (r.gateway_state='settlement' and p_gateway_state='capture') or (r.status in ('cancelled','expired','failed') and p_status='pending') then return false; end if;
+ -- Ordinary refund snapshots cannot clear a recorded dispute/reversal hold.
+ if r.gateway_state in ('deny','failure','chargeback','partial_chargeback') and p_status='partial_refund' and p_gateway_state is distinct from 'partial_chargeback' then return false; end if;
+ if r.status='refunded' or (r.status='partial_refund' and p_status in ('pending','paid','cancelled','expired')) or (r.status='paid' and p_status in ('pending','expired')) or (r.status='paid' and p_status='cancelled' and coalesce(r.gateway_state,'')<>'capture') or (r.gateway_state='settlement' and p_gateway_state='capture') or (r.status in ('cancelled','expired','failed') and p_status='pending') or (r.gateway_state in ('deny','failure','chargeback','partial_chargeback') and p_status in ('pending','paid')) then return false; end if;
  if r.status=p_status and r.refund_amount>=p_refund and r.gateway_state=p_gateway_state and r.gateway_transaction_id=p_transaction then return false; end if;
- if p_status in ('cancelled','expired','failed') and (r.status='pending' or (r.status='paid' and r.gateway_state='capture' and r.fulfillment_status in ('unfulfilled','processing'))) then perform public.zyha_restore_stock(r.id); end if;
+ -- Financial disputes/refunds are not evidence of returned goods.
+ if p_status in ('cancelled','expired','failed') and p_gateway_state not in ('chargeback','partial_chargeback') and r.fulfillment_status in ('unfulfilled','processing') and r.status in ('pending','paid') then perform public.zyha_restore_stock(r.id); end if;
  -- Never reject a real late settlement merely because an earlier expiry released stock.
  -- Re-reserve what is possible; the admin sees a precise reconciliation note.
  if p_status='paid' and r.stock_restored then
@@ -361,7 +364,7 @@ begin
  update public.orders set status=p_status,gateway_transaction_id=p_transaction,gateway_state=p_gateway_state,
  refund_amount=case when p_status='refunded' then total_price else greatest(refund_amount,p_refund) end,
  stock_restored=case when p_status='paid' then false else stock_restored end,
- inventory_note=case when shortage then 'Pembayaran terlambat diterima setelah pelepasan stok. Periksa ketersediaan fisik sebelum pengiriman.' when p_status='cancelled' and r.status='paid' and r.fulfillment_status in ('shipped','completed') then 'Transaksi capture dibatalkan di Midtrans setelah pengiriman. Rekonsiliasi dana dan barang secara manual.' else inventory_note end,
+ inventory_note=case when p_gateway_state in ('chargeback','partial_chargeback','deny','failure') then 'STOP fulfillment: provider reversal/dispute. Reconcile funds and physical goods; no automatic return of shipped goods. Missing partial chargeback amount excludes order from revenue pending reconciliation.' when shortage then 'Pembayaran terlambat diterima setelah pelepasan stok. Periksa ketersediaan fisik sebelum pengiriman.' when p_status='cancelled' and r.status='paid' and r.fulfillment_status in ('shipped','completed') then 'Transaksi capture dibatalkan di Midtrans setelah pengiriman. Rekonsiliasi dana dan barang secara manual.' else inventory_note end,
  version=version+1,updated_at=clock_timestamp() where id=p_id;
  insert into public.order_events(order_id,event,old_status,new_status,note) values(p_id,'midtrans_verified',r.status,p_status,'Status diperiksa melalui API server Midtrans.');
  return true;
@@ -388,7 +391,7 @@ begin
  if p_note is null or length(btrim(p_note)) not between 3 and 2000 then raise exception 'Isi alasan pembatalan'; end if;
  select * into r from public.orders where id=p_id for update;
  if not found or p_version is null or r.version<>p_version then raise exception 'Pesanan telah berubah. Muat ulang.'; end if;
- if r.status<>'pending' or r.payment_snapshot->>'type'<>'Midtrans' or r.snap_token is not null or r.gateway_transaction_id is not null or r.payment_lock_until>now() or r.created_at>now()-interval '5 minutes' then raise exception 'Hanya pesanan minimal 5 menit tanpa token/transaksi pembayaran yang dapat dibatalkan di sini.'; end if;
+ if r.status<>'pending' or r.payment_snapshot->>'type'<>'Midtrans' or r.snap_token is not null or r.gateway_transaction_id is not null or r.payment_lock_id is not null or r.payment_lock_until>now() or r.created_at>now()-interval '5 minutes' then raise exception 'Hanya pesanan minimal 5 menit tanpa percobaan/token/transaksi pembayaran yang dapat dibatalkan di sini.'; end if;
  perform public.zyha_restore_stock(r.id);
  update public.orders set status='cancelled',version=version+1,updated_at=clock_timestamp() where id=r.id;
  insert into public.order_events(order_id,actor_id,event,old_status,new_status,note) values(r.id,p_actor,'admin_cancelled',r.status,'cancelled',btrim(p_note));

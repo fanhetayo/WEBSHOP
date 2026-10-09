@@ -1,3 +1,26 @@
+-- Apply after supabase-setup.sql (payment_methods and zyha_is_admin are required).
+begin;
+create table if not exists public.zyha_storefront_preferences (
+  id integer primary key default 1 check(id=1),
+  banner_autoplay boolean not null default true,
+  banner_seconds integer not null default 6 check(banner_seconds between 3 and 20),
+  product_carousel boolean not null default true,
+  product_autoplay boolean not null default true,
+  product_seconds integer not null default 5 check(product_seconds between 3 and 20),
+  featured_ids uuid[] not null default '{}' check(cardinality(featured_ids)<=24 and array_position(featured_ids,null) is null),
+  product_heading text not null default 'Pilihan produk' check(length(btrim(product_heading)) between 1 and 160),
+  articles_enabled boolean not null default true,
+  article_heading text not null default 'Artikel / Tips Terbaru' check(length(btrim(article_heading)) between 1 and 160),
+  payments_enabled boolean not null default true,
+  payment_heading text not null default 'Metode pembayaran' check(length(btrim(payment_heading)) between 1 and 160),
+  trust_enabled boolean not null default true,
+  wishlist_enabled boolean not null default true,
+  quick_view_enabled boolean not null default true,
+  chat_enabled boolean not null default true,
+  chat_label text not null default 'Hubungi toko' check(length(btrim(chat_label)) between 1 and 160),
+  chat_message text not null default 'Halo, saya ingin bertanya tentang produk.' check(length(chat_message)<=700),
+  promotion_text text not null default '' check(length(promotion_text)<=500),
+  version bigint not null default 1,
   updated_at timestamptz not null default now()
 );
 create table if not exists public.zyha_storefront_content (

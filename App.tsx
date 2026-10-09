@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Message, Pagination, Photo } from './src/components/UI';
 import { useSearchParams } from 'react-router-dom';
 import { client, projectStorageKey } from './supabaseClient';
 import type { CartLine, Customer, OrderAccess, Product, Receipt } from './src/types';
@@ -26,6 +27,14 @@ import {
 export default function App() {
   const [params, setParams] = useSearchParams();
   const [showCart, setShowCart] = useState(false);
+  const submitting = useRef(false);
+  const [checkoutBusy, setCheckoutBusy] = useState(false);
+  function submissionBusy(value: boolean) {
+    submitting.current = value;
+    setCheckoutBusy(value);
+    if (value) setShowCart(false);
+    else setAccess(readOrderAccess());
+  }
   const [cart, setCart] = useState<CartLine[]>(() => {
     try {
       return parseCart(localStorage.getItem(projectStorageKey + 'cart'));
@@ -41,6 +50,9 @@ export default function App() {
   const page = Math.max(0, Math.min(100000, Math.floor(Number(params.get('page'))) || 0));
   const view = params.get('view') || 'shop', detailId = params.get('product') || '';
   const settings = useResource('settings:' + revision, () => getSettings());
+  // Keep checkout mounted while realtime refresh temporarily clears resource data.
+  const lastSettings = useRef(settings.data);
+  if (settings.data) lastSettings.current = settings.data;
   const methods = useResource('methods:' + revision, () => getMethods());
   const catalog = useResource(JSON.stringify([search, category, sort, page, revision]), signal => getProducts({ search, category, sort, page }, signal));
   const detail = useResource('product:' + detailId + ':' + revision, () => detailId ? getProduct(detailId) : Promise.resolve(null));
@@ -58,27 +70,32 @@ export default function App() {
       document.title = settings.data.store_name;
   }, [settings.data?.store_name]);
   useEffect(() => {
-    if (view !== 'receipt' || !access || receipt)
+    if (view !== 'receipt' || !access || (receipt && receipt.id === access.id))
       return; let active = true; void loadReceipt(access).then(r => {
-        if (active)
+        if (active) {
           setReceipt(r);
+          setAccess(readOrderAccess());
+        }
       }).catch(e => {
         if (active)
           setError(errorMessage(e));
       }); return () => { active = false; };
   }, [view, access?.requestId]);
   function navigate(nextView = 'shop', productId = '') {
+    if (submitting.current) return;
     const next = new URLSearchParams(params); next.delete('product'); next.delete('view'); if (nextView !== 'shop')
       next.set('view', nextView); if (productId)
       next.set('product', productId); setParams(next); setError(''); window.scrollTo({ top: 0, behavior: 'auto' });
   }
   function filter(key: string, value: string) {
+    if (submitting.current) return;
     const next = new URLSearchParams(params); next.delete('page'); if (value)
       next.set(key, value);
     else
       next.delete(key); setParams(next, { replace: true });
   }
   function add(product: Product, variant = '', buyNow = false) {
+    if (submitting.current) return;
     try {
       const next = addCartLine(cart, product, variant);
       setCart(next);
@@ -94,8 +111,17 @@ export default function App() {
       setError(errorMessage(e));
     }
   }
-  function done(order: Receipt, ref: OrderAccess, data: Customer) { setReceipt(order); setAccess(ref); setCustomer(data); setCart([]); navigate('receipt'); }
-  const store = settings.data;
+  function done(order: Receipt, ref: OrderAccess, data: Customer, submitted: CartLine[]) {
+    setReceipt(order); setAccess(ref); setCustomer(data);
+    // Browser history can leave checkout while its request finishes: retain new lines.
+    setCart(current => current.flatMap(line => {
+      const sent = submitted.find(x => x.product_id === line.product_id && x.variant === line.variant);
+      const quantity = line.quantity - (sent?.quantity || 0);
+      return quantity > 0 ? [{ ...line, quantity }] : [];
+    }));
+    navigate('receipt');
+  }
+  const store = settings.data || lastSettings.current;
   let wa = '';
   try {
     if (store?.admin_phone)
@@ -117,9 +143,10 @@ export default function App() {
           {store?.store_name || 'ZYHA ID'}
         </button>
         <nav aria-label="Navigasi toko">
+          <WishlistTrigger />
           <button className="text-button store-nav-link" aria-current={view === 'shop' && !detailId ? 'page' : undefined} onClick={() => navigate()}>Katalog</button>
           {access && <button className="text-button store-nav-link" aria-current={view === 'receipt' ? 'page' : undefined} onClick={() => navigate('receipt')}>Pesanan terakhir</button>}
-          <button className="button store-cart-button" onClick={() => setShowCart(true)}>
+          <button className="button store-cart-button" disabled={checkoutBusy} onClick={() => { if (!submitting.current) setShowCart(true); }}>
             <StoreIcon name="bag" />
             <span>Keranjang</span>
             <span className="cart-count">{cart.reduce((s, x) => s + x.quantity, 0)}</span>
@@ -132,8 +159,8 @@ export default function App() {
         <Message error={error || settings.error || methods.error} success={notice} />
         {(settings.error || methods.error) && <button className="button secondary" onClick={() => { settings.reload(); methods.reload(); }}>Coba kembali</button>}
       </div>
-      {view === 'checkout' && store ? <Checkout cart={cart} settings={store} methods={(methods.data || []).filter(m => m.type !== 'Midtrans' || store.midtrans_enabled)} onDone={done} onBack={() => navigate()} /> : view === 'receipt' && store ? <>
-        {receipt && access ? <OrderReceipt key={receipt.id} initial={receipt} access={access} settings={store} customer={customer} onBack={() => navigate()} /> : <section className="container section">
+      {view === 'checkout' && store ? <Checkout cart={cart} settings={store} methods={(methods.data || []).filter(m => m.type !== 'Midtrans' || store.midtrans_enabled)} onBusy={submissionBusy} onDone={done} onBack={() => navigate()} /> : view === 'receipt' && store ? <>
+        {receipt && access && receipt.id === access.id ? <OrderReceipt key={receipt.id} initial={receipt} access={access} settings={store} customer={customer} onBack={() => navigate()} /> : <section className="container section">
           <Message loading={!error && !!access} />
           {!access && <p>Belum ada bukti pesanan pada tab ini.</p>}
           <button className="button secondary" onClick={() => navigate()}>Kembali ke katalog</button>
@@ -142,8 +169,9 @@ export default function App() {
         <button className="text-button back-link" onClick={() => navigate()}><StoreIcon name="arrow-left" />Kembali ke katalog</button>
         <Message error={detail.error} loading={detail.loading} />
         {detail.data ? <ProductDetail key={detail.data.id} product={detail.data} onAdd={add} /> : !detail.loading && <p className="empty">Produk tidak ditemukan atau sudah tidak aktif.</p>}
-      <BannerCarousel> : <>
-        <section className="container hero-section" aria-label="Koleksi pilihan">
+      </section> : <>
+        <BannerCarousel>
+        <div aria-label="Koleksi pilihan">
           <div className={'hero ' + (store?.banner_url ? 'with-image' : '')}>
             {store?.banner_url && <div className="hero-media" key={store?.banner_url || 'no-banner'}>
               <Photo src={store.banner_url} alt={'Koleksi ' + store.store_name} />
@@ -155,7 +183,9 @@ export default function App() {
               <a href="#catalog" className="button">Belanja koleksi<StoreIcon name="arrow-right" /></a>
             </div>
           </div>
-        </section>
+        </div>
+        </BannerCarousel>
+        <ProductCarousel />
         <section className="container section catalog-section" id="catalog">
           <div className="section-heading">
             <div>
@@ -173,20 +203,6 @@ export default function App() {
   loading={catalog.loading}
   onFilter={filter}
 />
-            <Field label="Kategori">
-              <select value={category} onChange={e => filter('category', e.target.value)}>
-                <option value="">Semua kategori</option>
-                {(store?.categories || []).map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </Field>
-            <Field label="Urutkan">
-              <select value={sort} onChange={e => filter('sort', e.target.value)}>
-                <option value="newest">Terbaru</option>
-                <option value="price_asc">Harga terendah</option>
-                <option value="price_desc">Harga tertinggi</option>
-              </select>
-            </Field>
-          </div>
           <Message error={catalog.error} loading={catalog.loading} />
           {catalog.error && <button className="button secondary" onClick={catalog.reload}>Muat ulang katalog</button>}
           {!catalog.loading && !catalog.error && !catalog.data?.rows.length && <div className="empty">
@@ -202,6 +218,7 @@ export default function App() {
                 <p className="eyebrow">{p.category || 'Koleksi'}</p>
                 <h3><button className="product-name" onClick={() => navigate('shop', p.id)}>{p.title}</button></h3>
                 <strong>{money(p.price)}</strong>
+                <ProductTools id={p.id} />
                 {p.stock === 0 && <small className="stock-unavailable">Stok habis</small>}
                 <button type="button" className="button secondary wide product-action" disabled={p.stock === 0} onClick={() => p.variants.length ? navigate('shop', p.id) : add(p)}>
                   {p.variants.length ? 'Pilih varian' : 'Tambah ke keranjang'}
@@ -211,6 +228,8 @@ export default function App() {
           </div>
           {(catalog.data?.count || 0) > 16 && <Pagination page={page} count={catalog.data?.count || 0} size={16} disabled={catalog.loading} onChange={n => { const next = new URLSearchParams(params); next.set('page', String(n)); setParams(next); document.getElementById('catalog')?.scrollIntoView(); }} />}
         </section>
+        <PaymentTrustSection />
+        <ArticleSection />
       </>}
     </main>
     <footer className="store-footer">
@@ -226,14 +245,18 @@ export default function App() {
       </div>
     </footer>
     <CartPanel open={showCart} cart={cart} onClose={() => setShowCart(false)} onQuantity={(line, n) => {
+      if (submitting.current) return;
       try {
         setCart(setCartQuantity(cart, line.product_id, line.variant, n));
       }
       catch (e) {
         setError(errorMessage(e));
       }
-    }} onRemove={line => setCart(cart.filter(x => x.product_id !== line.product_id || x.variant !== line.variant))} onCheckout={() => { setShowCart(false); navigate('checkout'); }} />
-  </div>;
+    }} onRemove={line => { if (!submitting.current) setCart(cart.filter(x => x.product_id !== line.product_id || x.variant !== line.variant)); }} onCheckout={() => { setShowCart(false); navigate('checkout'); }} />
+    <FloatingChat />
+  </div>
+  </StorefrontProvider>
+  );
 }
 function ProductDetail({ product: p, onAdd }: {
   product: Product;

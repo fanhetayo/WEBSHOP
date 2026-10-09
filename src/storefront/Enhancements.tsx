@@ -1,3 +1,96 @@
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
+import { client, projectStorageKey } from '../../supabaseClient';
+import type { PaymentMethod, Settings } from '../types';
+import { Message, Modal, Photo } from '../components/UI';
+import { getProduct } from '../lib/api';
+import { errorMessage, money, whatsappUrl } from '../lib/domain';
+import { useResource } from '../lib/useResource';
+import { openLiveChat } from '../shop/payment';
+import { getContentItem, getFeaturedProducts, getProductsByIds, getPublicContent } from './api';
+import { DEFAULT_PREFERENCES, parseWishlist, safeContentLink } from './model';
+import { RotationControls, useAutoplay } from './Controls';
+
+type StorefrontContextValue = {
+  content: Awaited<ReturnType<typeof getPublicContent>> | null;
+  store: Settings | null; methods: PaymentMethod[]; revision: number;
+  openProduct: (id: string) => void; wishlist: string[]; toggle: (id: string) => void;
+  showWishlist: () => void; quickView: (id: string) => void;
+};
+const StorefrontContext = createContext<StorefrontContextValue | null>(null);
+function useStorefront() {
+  const value = useContext(StorefrontContext);
+  if (!value) throw new Error('StorefrontProvider is required.');
+  return value;
+}
+export function StorefrontProvider({ children, store, methods, revision, onOpenProduct }: {
+  children: ReactNode; store: Settings | null; methods: PaymentMethod[]; revision: number; onOpenProduct: (id: string) => void;
+}) {
+  const [contentRevision, setContentRevision] = useState(0);
+  const content = useResource('storefront:' + revision + ':' + contentRevision, getPublicContent);
+  const [wishlist, setWishlist] = useState<string[]>(() => {
+    try { return parseWishlist(localStorage.getItem(projectStorageKey + 'wishlist')); } catch { return []; }
+  });
+  const [show, setShow] = useState(false), [quickId, setQuickId] = useState(''), [storageError, setStorageError] = useState('');
+  useEffect(() => {
+    try { localStorage.setItem(projectStorageKey + 'wishlist', JSON.stringify(wishlist)); }
+    catch { setStorageError('Wishlist tidak dapat disimpan pada perangkat ini.'); }
+  }, [wishlist]);
+  useEffect(() => {
+    const sync = (event: StorageEvent) => { if (event.key === projectStorageKey + 'wishlist') setWishlist(parseWishlist(event.newValue)); };
+    window.addEventListener('storage', sync);
+    const channel = client().channel('zyha-storefront-content')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'zyha_storefront_content' }, () => setContentRevision(n => n + 1))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'zyha_storefront_preferences' }, () => setContentRevision(n => n + 1)).subscribe();
+    return () => { window.removeEventListener('storage', sync); void client().removeChannel(channel); };
+  }, []);
+  const openProduct = (id: string) => { setShow(false); setQuickId(''); onOpenProduct(id); };
+  return <StorefrontContext.Provider value={{ content: content.data, store, methods, revision: revision + contentRevision, openProduct, wishlist,
+    toggle: id => setWishlist(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id].slice(0, 100)),
+    showWishlist: () => setShow(true), quickView: setQuickId }}>
+    {children}
+    <Message error={storageError || content.error} />
+    {content.error && <button className="button secondary" onClick={content.reload}>Muat ulang konten toko</button>}
+    <WishlistModal open={show} onClose={() => setShow(false)} />
+    <QuickView id={quickId} onClose={() => setQuickId('')} />
+  </StorefrontContext.Provider>;
+}
+function Outline({ name }: { name: 'chat' | 'heart' | 'eye' }) {
+  return <svg className="store-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+    {name === 'chat' ? <path d="M4 4h16v13H9l-5 4V4Z" /> : name === 'heart' ? <path d="M12 21 3 12C-3 4 7-1 12 6c5-7 15-2 9 6l-9 9Z" /> : <><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></>}
+  </svg>;
+}
+export function WishlistTrigger() {
+  const ctx = useStorefront();
+  return ctx.content?.preferences.wishlist_enabled ? <button type="button" className="text-button sf-inline" onClick={ctx.showWishlist}><Outline name="heart" />Wishlist ({ctx.wishlist.length})</button> : null;
+}
+export function ProductTools({ id }: { id: string }) {
+  const ctx = useStorefront(), prefs = ctx.content?.preferences;
+  return <div className="actions sf-product-tools">
+    {prefs?.wishlist_enabled && <button type="button" className="text-button" aria-pressed={ctx.wishlist.includes(id)} onClick={() => ctx.toggle(id)}>{ctx.wishlist.includes(id) ? 'Hapus wishlist' : 'Simpan wishlist'}</button>}
+    {prefs?.quick_view_enabled && <button type="button" className="text-button" onClick={() => ctx.quickView(id)}>Lihat cepat</button>}
+  </div>;
+}
+function QuickView({ id, onClose }: { id: string; onClose: () => void }) {
+  const ctx = useStorefront();
+  const result = useResource('quick:' + id + ':' + ctx.revision, () => id ? getProduct(id) : Promise.resolve(null));
+  const p = result.data;
+  return <Modal open={!!id} title={p?.title || 'Lihat produk'} onClose={onClose}>
+    <Message loading={result.loading} error={result.error} />
+    {result.error && <button className="button secondary" onClick={result.reload}>Coba lagi</button>}
+    {p ? <div className="stack"><Photo src={p.image_url || p.images[0]} alt={p.title} /><strong>{money(p.price)}</strong><p>{p.description}</p><button className="button" onClick={() => ctx.openProduct(p.id)}>Lihat detail / pilih varian</button></div> : !result.loading && !result.error && <p>Produk tidak tersedia.</p>}
+  </Modal>;
+}
+function WishlistModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const ctx = useStorefront();
+  const result = useResource('wishlist:' + open + ':' + ctx.wishlist.join(',') + ':' + ctx.revision, () => open ? getProductsByIds(ctx.wishlist) : Promise.resolve([]));
+  return <Modal open={open} title="Wishlist" onClose={onClose}>
+    <Message loading={result.loading} error={result.error} />
+    {result.error && <button className="button secondary" onClick={result.reload}>Coba lagi</button>}
+    {!ctx.wishlist.length && <p>Wishlist masih kosong.</p>}
+    <div className="stack">{ctx.wishlist.map(id => {
+      const p = result.data?.find(item => item.id === id);
+      return <article key={id} className="panel"><h3>{p?.title || 'Produk tidak tersedia'}</h3>{p && <button className="button secondary" onClick={() => ctx.openProduct(id)}>Lihat produk</button>}<button className="text-button" onClick={() => ctx.toggle(id)}>Hapus</button></article>;
     })}</div>
   </Modal>;
 }
