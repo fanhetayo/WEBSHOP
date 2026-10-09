@@ -10,6 +10,19 @@ import { CartPanel } from './src/shop/CartPanel';
 import { Checkout } from './src/shop/Checkout';
 import { OrderReceipt } from './src/shop/OrderReceipt';
 import { openLiveChat } from './src/shop/payment';
+import { CatalogControls } from './src/storefront/Controls';
+
+import {
+  StorefrontProvider,
+  WishlistTrigger,
+  ProductTools,
+  PromotionStrip,
+  BannerCarousel,
+  ProductCarousel,
+  PaymentTrustSection,
+  ArticleSection,
+  FloatingChat,
+} from './src/storefront/Enhancements';
 // Existing storefront: catalog -> detail/cart -> checkout. No production-app code.
 export default function App() {
   const [params, setParams] = useSearchParams();
