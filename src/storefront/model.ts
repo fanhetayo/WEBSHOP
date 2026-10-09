@@ -1,12 +1,12 @@
 /** New public merchandising data only. Never put payment keys or customer data here. */
 export type ContentKind = 'banner' | 'article' | 'trust' | 'payment';
 export interface ContentItem {
-  id: string; kind: ContentKind; title: string; summary: string; body: string;
+  id: string; slug: string | null; kind: ContentKind; title: string; summary: string; body: string;
   image_url: string; link_url: string; button_label: string;
   payment_method_id: string | null; sort_order: number; published: boolean;
   version: number; created_at: string; updated_at: string;
 }
-export type ContentDraft = Omit<ContentItem, 'id' | 'version' | 'created_at' | 'updated_at'>;
+export type ContentDraft = Omit<ContentItem, 'id' | 'slug' | 'version' | 'created_at' | 'updated_at'>;
 export interface StorefrontPreferences {
   id: number; banner_autoplay: boolean; banner_seconds: number;
   product_carousel: boolean; product_autoplay: boolean; product_seconds: number;

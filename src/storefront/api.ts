@@ -4,15 +4,16 @@ import type { Product } from '../types';
 import { UUID, validateContent, validatePreferences, type ContentItem, type ContentDraft, type ContentKind, type StorefrontPreferences } from './model';
 const contentTable = 'zyha_storefront_content';
 const preferencesTable = 'zyha_storefront_preferences';
-const summaryFields = 'id,kind,title,summary,image_url,link_url,button_label,payment_method_id,sort_order,published,version,created_at,updated_at';
+const summaryFields = 'id,slug,kind,title,summary,image_url,link_url,button_label,payment_method_id,sort_order,published,version,created_at,updated_at';
 export async function getPreferences(): Promise<StorefrontPreferences> {
   const { data, error } = await client().from(preferencesTable).select('*').eq('id', 1).single();
   if (error) throw error; return data as StorefrontPreferences;
 }
-export async function getContent(kind: ContentKind, admin = false, page = 0) {
+export async function getContent(kind: ContentKind, admin = false, page = 0, signal?: AbortSignal) {
   let q = client().from(contentTable).select(summaryFields, { count: 'exact' }).eq('kind', kind)
     .order('sort_order').order('created_at', { ascending: false }).order('id');
   if (!admin) q = q.eq('published', true);
+  if (signal) q = q.abortSignal(signal);
   const size = admin ? 20 : kind === 'article' ? 6 : 24;
   const { data, count, error } = await q.range(page * size, page * size + size - 1);
   if (error) throw error; return { rows: (data || []) as Omit<ContentItem, 'body'>[], count: count || 0 };
@@ -24,7 +25,9 @@ export async function getContentItem(id: string, admin = false): Promise<Content
   const { data, error } = await q.maybeSingle(); if (error) throw error; return data as ContentItem | null;
 }
 export async function saveContent(input: ContentDraft, original?: ContentItem) {
-  const payload = validateContent(input);
+  // Explicit allowlist: fetched records also contain server-owned metadata/slug.
+  const { title, summary, body, image_url, link_url, button_label, payment_method_id, sort_order, published } = validateContent(input);
+  const payload = { kind: input.kind, title, summary, body, image_url, link_url, button_label, payment_method_id, sort_order, published };
   const { kind, ...mutable } = payload;
   const q = original ? client().from(contentTable).update(mutable).eq('id', original.id).eq('version', original.version)
     : client().from(contentTable).insert({ kind, ...mutable });
@@ -56,4 +59,11 @@ export async function getPublicContent() {
     getPreferences(), getContent('banner'), getContent('article'), getContent('trust'), getContent('payment'),
   ]);
   return { preferences, banner: banner.rows, article: article.rows, trust: trust.rows, payment: payment.rows };
+}
+export async function getArticle(slug: string, signal: AbortSignal): Promise<ContentItem | null> {
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 220) return null;
+  const { data, error } = await client().from(contentTable).select('*')
+    .eq('kind', 'article').eq('slug', slug).eq('published', true).abortSignal(signal).maybeSingle();
+  if (error) throw error;
+  return data as ContentItem | null;
 }

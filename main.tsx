@@ -23,6 +23,8 @@ ReactDOM.createRoot(root).render(<React.StrictMode>
       <Suspense fallback={<p className="container section" role="status">Memuat halaman…</p>}>
         <Routes>
           <Route path="/" element={<App />} />
+          <Route path="/artikel" element={<App />} />
+          <Route path="/artikel/:slug" element={<App />} />
           <Route path="/backoffice/*" element={<Admin />} />
           <Route path="*" element={<main className="container section">
             <h1>Halaman tidak ditemukan</h1>
