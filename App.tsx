@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Message, Pagination, Photo } from './src/components/UI';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import Articles from './src/storefront/Articles';
+import { RotationControls, useAutoplay } from './src/storefront/Controls';
 import { client, projectStorageKey } from './supabaseClient';
 import type { CartLine, Customer, OrderAccess, Product, Receipt } from './src/types';
 import { addCartLine, errorMessage, money, parseCart, setCartQuantity, whatsappUrl } from './src/lib/domain';
@@ -25,6 +27,8 @@ import {
 } from './src/storefront/Enhancements';
 // Existing storefront: catalog -> detail/cart -> checkout. No production-app code.
 export default function App() {
+  const location = useLocation(), go = useNavigate();
+  const articlesPage = location.pathname.startsWith('/artikel');
   const [params, setParams] = useSearchParams();
   const [showCart, setShowCart] = useState(false);
   const submitting = useRef(false);
@@ -83,6 +87,7 @@ export default function App() {
   }, [view, access?.requestId]);
   function navigate(nextView = 'shop', productId = '') {
     if (submitting.current) return;
+    if (articlesPage) { go('/?' + new URLSearchParams({ ...(nextView !== 'shop' ? { view: nextView } : {}), ...(productId ? { product: productId } : {}) })); return; }
     const next = new URLSearchParams(params); next.delete('product'); next.delete('view'); if (nextView !== 'shop')
       next.set('view', nextView); if (productId)
       next.set('product', productId); setParams(next); setError(''); window.scrollTo({ top: 0, behavior: 'auto' });
@@ -144,6 +149,7 @@ export default function App() {
         </button>
         <nav aria-label="Navigasi toko">
           <WishlistTrigger />
+          <Link className="text-button store-nav-link" aria-current={articlesPage ? 'page' : undefined} to="/artikel">Artikel</Link>
           <button className="text-button store-nav-link" aria-current={view === 'shop' && !detailId ? 'page' : undefined} onClick={() => navigate()}>Katalog</button>
           {access && <button className="text-button store-nav-link" aria-current={view === 'receipt' ? 'page' : undefined} onClick={() => navigate('receipt')}>Pesanan terakhir</button>}
           <button className="button store-cart-button" disabled={checkoutBusy} onClick={() => { if (!submitting.current) setShowCart(true); }}>
@@ -159,7 +165,7 @@ export default function App() {
         <Message error={error || settings.error || methods.error} success={notice} />
         {(settings.error || methods.error) && <button className="button secondary" onClick={() => { settings.reload(); methods.reload(); }}>Coba kembali</button>}
       </div>
-      {view === 'checkout' && store ? <Checkout cart={cart} settings={store} methods={(methods.data || []).filter(m => m.type !== 'Midtrans' || store.midtrans_enabled)} onBusy={submissionBusy} onDone={done} onBack={() => navigate()} /> : view === 'receipt' && store ? <>
+      {articlesPage ? <Articles /> : view === 'checkout' && store ? <Checkout cart={cart} settings={store} methods={(methods.data || []).filter(m => m.type !== 'Midtrans' || store.midtrans_enabled)} onBusy={submissionBusy} onDone={done} onBack={() => navigate()} /> : view === 'receipt' && store ? <>
         {receipt && access && receipt.id === access.id ? <OrderReceipt key={receipt.id} initial={receipt} access={access} settings={store} customer={customer} onBack={() => navigate()} /> : <section className="container section">
           <Message loading={!error && !!access} />
           {!access && <p>Belum ada bukti pesanan pada tab ini.</p>}
@@ -267,13 +273,16 @@ function ProductDetail({ product: p, onAdd }: {
   // Display gallery uses only product photos; variant previews live in their own selection panel.
   const images = Array.from(new Set([p.image_url, ...p.images].filter(Boolean)));
   const imageVariant = p.variants.find(v => v.image && v.image === image);
+  const move = (delta: number) => setImage(current => images[(Math.max(0, images.indexOf(current)) + delta + images.length) % images.length]);
+  const motion = useAutoplay(() => move(1), images.length > 1, 5, images.join('|'));
+  const selectImage = (value: string) => { motion.setPaused(true); setImage(value); };
   return <div className="product-detail">
-    <section className="product-gallery" aria-label="Display produk">
+    <section className="product-gallery" ref={motion.ref} {...motion.bindings} aria-label="Display produk" aria-roledescription="carousel">
       <div className="gallery-heading">
         <p className="eyebrow">Galeri produk</p>
         <span className="muted">{images.length} foto display</span>
       </div>
-      <figure className="product-stage">
+      <figure className="product-stage" aria-live={motion.running ? 'off' : 'polite'}>
         <div className="image-transition" key={image}>
           <Photo src={image} alt={p.title} className="detail-photo" />
         </div>
@@ -282,10 +291,11 @@ function ProductDetail({ product: p, onAdd }: {
         </figcaption>
       </figure>
       <div className="gallery" aria-label="Foto display produk">
-        {images.map((img, i) => <button type="button" key={img} className={image === img ? 'selected' : ''} onClick={() => setImage(img)} aria-label={'Foto ' + (i + 1)} aria-pressed={image === img}>
+        {images.map((img, i) => <button type="button" key={img} className={image === img ? 'selected' : ''} onClick={() => selectImage(img)} aria-label={'Foto ' + (i + 1)} aria-pressed={image === img}>
           <Photo src={img} alt={p.title + ' ' + (i + 1)} />
         </button>)}
       </div>
+      {images.length > 1 && <RotationControls next={() => { motion.setPaused(true); move(1); }} previous={() => { motion.setPaused(true); move(-1); }} paused={motion.paused} onToggle={() => motion.setPaused(v => !v)} enabled reduced={motion.reduced} />}
     </section>
     <section className="stack product-info" aria-label="Informasi dan pilihan produk">
       <div className="product-heading">
@@ -306,7 +316,7 @@ function ProductDetail({ product: p, onAdd }: {
         <div className="variants">
           {p.variants.map(v => <button type="button" key={v.name} className={'button secondary variant-option ' + (variant === v.name ? 'selected' : '')} aria-pressed={variant === v.name} onClick={() => {
             setVariant(v.name); if (v.image)
-              setImage(v.image);
+              selectImage(v.image);
           }}>
             {v.image && <span className="variant-thumbnail"><Photo src={v.image} alt={'Varian ' + v.name} /></span>}
             <span className="variant-label">{v.name}</span>
